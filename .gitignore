@@ -24,6 +24,7 @@ venv/
 *.egg
 AUTHORS
 ChangeLog
+.env
 
 # Installer logs
 pip-log.txt
