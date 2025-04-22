@@ -23,21 +23,20 @@
 
 """ Tests for fritzcollectd """
 
-from __future__ import print_function
+
 
 import collections
 import sys
+import os
 
-try:
-    import mock
-except ImportError:
-    from unittest import mock
+from unittest import mock
 
 import pytest
 
 from lxml.etree import XMLSyntaxError  # pylint: disable=no-name-in-module
 
-import fritzconnection
+from fritzconnection import FritzConnection # pylint: disable=unused-import
+from fritzconnection.core.exceptions import FritzAuthorizationError
 
 
 class CollectdMock(object):
@@ -115,7 +114,7 @@ class CollectdConfig(object):  # pylint: disable=too-few-public-methods
     def children(self):
         """ Property passed to the collectd configuration callback. """
         node = collections.namedtuple('Node', ['key', 'values'])
-        return [node(key=k, values=[v]) for k, v in self._config.items()]
+        return [node(key=k, values=[v]) for k, v in list(self._config.items())]
 
 
 class CollectdValues(object):  # pylint: disable=too-few-public-methods
@@ -213,7 +212,7 @@ class FritzConnectionMock(object):  # pylint: disable=too-few-public-methods
 
     def _side_effect_callaction(self, service, action, **kwargs):
         if kwargs:
-            index = next(iter(kwargs.values()))
+            index = next(iter(list(kwargs.values())))
             return self.FRITZBOX_DATA_INDEXED[(service, action)][index]
 
         return self.FRITZBOX_DATA[(service, action)]
@@ -241,7 +240,7 @@ def reset_mock():
 @pytest.fixture()
 def fc_class_mock(mocker):
     """Fixture that sets up a mocked FritzConnection class."""
-    result = mocker.patch('fritzconnection.FritzConnection', autospec=True)
+    result = mocker.patch('fritzcollectd.FritzConnection', autospec=True)
     result.return_value = FritzConnectionMock()
     yield result
 
@@ -321,7 +320,7 @@ def test_incorrect_password(fc_class_mock):
     fc_mock = FritzConnectionMock()
     fc_class_mock.return_value = fc_mock
     fc_mock.call_action.side_effect = [
-        {0}, fritzconnection.AuthorizationError(0, 0, 0, 0)]
+        {0}, FritzAuthorizationError(0, 0, 0, 0)]
     with pytest.raises(IOError):
         MOCK.process(CollectdConfig({'Password': 'incorrect'}))
 
@@ -337,14 +336,22 @@ def test_xmlsyntaxerror_in_read(fc_class_mock):
 
 # System tests that try to interact with a real hardware device.
 
-@pytest.mark.skip(reason="system test")
+#@pytest.mark.skip(reason="system test")
 def test_system_connection():
     """ System test: Read values of real router. """
-    MOCK.process()
+    config = CollectdConfig({'Address': os.getenv('FRITZ_IP_ADDRESS'), 
+                             'Port': os.getenv('FRITZ_TCP_PORT'),
+                             'User': os.getenv('FRITZ_USERNAME'), 
+                             'Password': os.getenv('FRITZ_PASSWORD'),
+                             'Hostname': os.getenv('FRITZ_HOSTNAME'), 
+                             'Instance': os.getenv('FRITZ_INSTANCE'),
+                             'Verbose': os.getenv('FRITZ_VERBOSE'), 
+                             'UNKNOWN': 'UNKNOWN'})
+    MOCK.process(config)
     assert MOCK.values
 
 
-@pytest.mark.skip(reason="system test")
+#@pytest.mark.skip(reason="system test")
 def test_system_connectionfailure():
     """ System test: Attempt to connect to localhost (connection failure). """
     with pytest.raises(IOError):

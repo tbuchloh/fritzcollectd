@@ -24,8 +24,13 @@
 """ fritzcollectd - FRITZ!Box collectd plugin """
 
 from collections import namedtuple, OrderedDict
+import logging
 
-import fritzconnection
+from fritzconnection import FritzConnection
+from fritzconnection.core.fritzconnection import FRITZ_IP_ADDRESS, FRITZ_TCP_PORT, FRITZ_USERNAME
+from fritzconnection.core.exceptions import FritzAuthorizationError, FritzActionError
+from fritzconnection.core.logger import activate_local_debug_mode
+
 import pbr.version
 
 from lxml.etree import XMLSyntaxError  # pylint: disable=no-name-in-module
@@ -77,12 +82,12 @@ class FritzCollectd(object):
          {'NewLayer1DownstreamMaxBitRate':
           Value('linkdownstreammax', 'bitrate'),
           'NewLayer1UpstreamMaxBitRate': Value('linkupstreammax', 'bitrate')}),
-        (ServiceAction('X_AVM-DE_Homeauto:1', 'GetGenericDeviceInfos',
-                       'NewIndex', 'NewIndex', 'dect'),
-         {'NewMultimeterPower': Value('power', 'power'),
-          'NewMultimeterEnergy': Value('energy', 'power'),
-          'NewTemperatureCelsius': Value('temperature', 'temperature'),
-          'NewSwitchState': Value('switchstate', 'gauge')}),
+        # (ServiceAction('X_AVM-DE_Homeauto:1', 'GetGenericDeviceInfos',
+        #                'NewIndex', 'NewIndex', 'dect'),
+        #  {'NewMultimeterPower': Value('power', 'power'),
+        #   'NewMultimeterEnergy': Value('energy', 'power'),
+        #   'NewTemperatureCelsius': Value('temperature', 'temperature'),
+        #   'NewSwitchState': Value('switchstate', 'gauge')}),
     ])
 
     CONVERSION = {
@@ -97,9 +102,9 @@ class FritzCollectd(object):
     }
 
     def __init__(self,  # pylint: disable=too-many-arguments
-                 address=fritzconnection.fritzconnection.FRITZ_IP_ADDRESS,
-                 port=fritzconnection.fritzconnection.FRITZ_TCP_PORT,
-                 user=fritzconnection.fritzconnection.FRITZ_USERNAME,
+                 address=FRITZ_IP_ADDRESS,
+                 port=FRITZ_TCP_PORT,
+                 user=FRITZ_USERNAME,
                  password='',
                  hostname='',
                  plugin_instance='',
@@ -113,6 +118,7 @@ class FritzCollectd(object):
         self._verbose = verbose.lower() in ['true', 'yes']
         if self._verbose:
             collectd.info("fritzcollectd: Verbose logging enabled")
+            activate_local_debug_mode(handler=logging.StreamHandler())
         self._fc = None
 
     def _dispatch_value(self, plugin_instance,
@@ -135,7 +141,7 @@ class FritzCollectd(object):
 
     def init(self):
         """ Initialize the connection to the FRITZ!Box """
-        self._fc = fritzconnection.FritzConnection(
+        self._fc = FritzConnection(
             address=self._fritz_address, port=self._fritz_port,
             user=self._fritz_user, password=self._fritz_password)
         if self._fc.modelname is None:
@@ -151,23 +157,26 @@ class FritzCollectd(object):
         if self._fritz_password != '':
             # If the 'Allow access for applications' option is disabled,
             # the connection behaves as if it was created without password.
-            if 'WANIPConnection:1' not in self._fc.services.keys():
+            if 'WANIPConnection1' not in list(self._fc.services.keys()):
                 self._fc = None
                 raise IOError("fritzcollectd: Allow access for applications "
                               "is not enabled")
 
-            try:
-                self._fc.call_action('WANIPConnection:1', 'GetStatusInfo')
-            except fritzconnection.AuthorizationError:
-                self._fc = None
-                raise IOError("fritzcollectd: Incorrect password or "
-                              "'FRITZ!Box Settings' rights for user disabled")
+            # try:
+            #     self._fc.call_action('WANIPConnection:1', 'GetStatusInfo')
+            # except FritzAuthorizationError:
+            #     self._fc = None
+            #     raise IOError("fritzcollectd: Incorrect password or "
+            #                   "'FRITZ!Box Settings' rights for user disabled")
+            # except FritzActionError as e:
+            #     # raise IOError(f"fritzcollectd: Unhandled exception {e}")
+            #     collectd.info("fritzcollectd: Unhandled exception {e}")    
         else:
             collectd.info("fritzcollectd: No password configured, "
                           "some values cannot be queried")
 
-        self._filter_service_actions(self.SERVICE_ACTIONS,
-                                     self._fc.actionnames)
+        # self._filter_service_actions(self.SERVICE_ACTIONS,
+        #                              self._fc.actionnames)
 
     @classmethod
     def _filter_service_actions(cls, service_actions, actionnames):
@@ -183,7 +192,7 @@ class FritzCollectd(object):
     def read(self):
         """ Read and dispatch """
         values = self._read_data(self.SERVICE_ACTIONS, self._fc)
-        for (instance, value_instance), (value_type, value) in values.items():
+        for (instance, value_instance), (value_type, value) in list(values.items()):
             self._dispatch_value(instance, value_type, value_instance, value)
 
     def _read_data(self, service_actions, connection):
@@ -213,9 +222,15 @@ class FritzCollectd(object):
                                   "{} {} {}".format(service_action.service,
                                                     service_action.action,
                                                     parameters))
-                readings = connection.call_action(
-                    service_action.service, service_action.action,
-                    **parameters)
+                try:
+                    readings = connection.call_action(
+                        service_action.service, service_action.action,
+                        **parameters)
+                except FritzActionError as e:
+                    #raise IOError(f"Could not call action {service_action.service}.{service_action.action}! Cause: {e}")
+                    collectd.error(f"Could not call action {service_action.service}.{service_action.action}! Cause: {e}")
+                    continue
+                
                 if not readings:
                     if self._verbose:
                         collectd.info("fritzcollectd: No readings received")
@@ -228,7 +243,7 @@ class FritzCollectd(object):
                         service_action.instance_prefix,
                         readings[service_action.instance_field]
                     ))
-                plugin_instance = '-'.join(filter(None, plugin_instance))
+                plugin_instance = '-'.join([_f for _f in plugin_instance if _f])
 
                 values.update({  # pragma: no branch
                     (plugin_instance, value.value_instance): (
@@ -237,7 +252,7 @@ class FritzCollectd(object):
                             readings[action_argument])
                     )
                     for (action_argument, value)
-                    in service_actions[service_action].items()
+                    in list(service_actions[service_action].items())
                 })
 
                 if not service_action.index_field:

@@ -21,5 +21,6 @@
 
 # Version <0.8 had broken service names. Version 1.0 no longer supports
 # Python 2.7.
-fritzconnection>=0.8.0,<1.0.0
-pbr
+# fritzconnection>=0.8.0,<1.0.0
+fritzconnection==1.14.0
+pbr==6.1.1
